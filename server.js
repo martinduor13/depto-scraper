@@ -16,18 +16,25 @@ const DEFAULT_CONFIG = {
     "alcantara",
     "escuela militar",
     "manquehue",
-    "metro"
   ],
   newBuildingKeywords: [
     "nuevo",
     "casi nuevo",
-    "semi nuevo",
     "edificio semi nuevo",
-    "condominio nuevo",
+    "edificio seminuevo",
     "edificio nuevo",
     "entrega inmediata",
     "proyecto",
     "inmobiliaria"
+  ],
+  furnishedKeywords: [
+    "amoblado",
+    "amoblada",
+    "full amoblado",
+    "full equipada",
+    "full equipado",
+    "equipado",
+    "equipada"
   ]
 };
 
@@ -196,6 +203,7 @@ function extractCardsFromPortal($, sourceUrl) {
 function enrichAndFilter(items, config) {
   const metroKeywords = config.metroKeywords.map(lower);
   const newBuildingKeywords = config.newBuildingKeywords.map(lower);
+  const furnishedKeywords = config.furnishedKeywords.map(lower);
 
   return items
     .map((item) => {
@@ -211,6 +219,7 @@ function enrichAndFilter(items, config) {
 
       const nearMetro = metroKeywords.some((k) => text.includes(k));
       const isNewBuilding = newBuildingKeywords.some((k) => text.includes(k));
+      const isFurnished = furnishedKeywords.some((k) => text.includes(k));
 
       let layoutAllowed = false;
       if (beds === 1 && baths === 1) layoutAllowed = true;
@@ -219,6 +228,7 @@ function enrichAndFilter(items, config) {
 
       let score = 0;
       if (isNewBuilding) score += 35;
+      if (isFurnished) score += 35;
       if (nearMetro) score += 25;
       if (beds === 2) score += 10;
       if (baths === 2) score += 10;
@@ -234,6 +244,7 @@ function enrichAndFilter(items, config) {
         totalPrice,
         nearMetro,
         isNewBuilding,
+        isFurnished,
         isStudio: studio,
         layoutAllowed,
         score
@@ -243,6 +254,7 @@ function enrichAndFilter(items, config) {
     .filter((x) => x.layoutAllowed)
     .filter((x) => x.nearMetro)
     .filter((x) => x.isNewBuilding)
+    .filter((x) => x.isFurnished)
     .filter(
       (x) =>
         x.totalPrice &&
