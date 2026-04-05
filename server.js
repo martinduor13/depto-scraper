@@ -214,11 +214,11 @@ async function autoScroll(page, rounds = 4) {
 async function scrapePortalPage(page, target) {
   await page.goto(target.url, {
     waitUntil: "domcontentloaded",
-    timeout: 60000
+    timeout: 30000
   });
 
   await page.waitForTimeout(3500);
-  await autoScroll(page, 5);
+  await autoScroll(page, 2);
 
   const items = await page.evaluate((sourceUrl) => {
     function normalizeText(s = "") {
