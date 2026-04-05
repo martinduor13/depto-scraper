@@ -1,5 +1,5 @@
 import express from "express";
-import * as cheerio from "cheerio";
+import { chromium } from "playwright";
 
 const app = express();
 app.use(express.json());
@@ -16,12 +16,11 @@ const DEFAULT_CONFIG = {
     "alcantara",
     "escuela militar",
     "manquehue",
+    "metro"
   ],
   newBuildingKeywords: [
     "nuevo",
     "casi nuevo",
-    "edificio semi nuevo",
-    "edificio seminuevo",
     "edificio nuevo",
     "entrega inmediata",
     "proyecto",
@@ -34,7 +33,8 @@ const DEFAULT_CONFIG = {
     "full equipada",
     "full equipado",
     "equipado",
-    "equipada"
+    "equipada",
+    "amoblado completo"
   ]
 };
 
@@ -80,22 +80,6 @@ function buildTargets() {
   ];
 }
 
-async function fetchHtml(url) {
-  const res = await fetch(url, {
-    headers: {
-      "user-agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
-      "accept-language": "es-CL,es;q=0.9,en;q=0.8"
-    }
-  });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} en ${url}`);
-  }
-
-  return await res.text();
-}
-
 function detectBeds(text) {
   const t = lower(text);
 
@@ -139,9 +123,7 @@ function inferPrice(text) {
   const t = normalizeText(text);
 
   const clpMatches = [...t.matchAll(/\$\s*([\d\.\,]+)/g)];
-  if (clpMatches.length > 0) {
-    return extractNumber(clpMatches[0][1]);
-  }
+  if (clpMatches.length > 0) return extractNumber(clpMatches[0][1]);
 
   if (/\buf\b/i.test(t)) return null;
 
@@ -152,52 +134,10 @@ function inferCommonExpenses(text) {
   const t = normalizeText(text);
 
   const gcMatch =
-    t.match(/gastos?\s+comunes?.{0,20}\$?\s*([\d\.\,]+)/i) ||
-    t.match(/\bgc\b.{0,15}\$?\s*([\d\.\,]+)/i);
+    t.match(/gastos?\s+comunes?.{0,25}\$?\s*([\d\.\,]+)/i) ||
+    t.match(/\bgc\b.{0,20}\$?\s*([\d\.\,]+)/i);
 
   return gcMatch ? extractNumber(gcMatch[1]) : 0;
-}
-
-function extractCardsFromPortal($, sourceUrl) {
-  const items = [];
-  const seen = new Set();
-
-  $("a[href]").each((_, el) => {
-    const href = $(el).attr("href");
-    if (!href) return;
-
-    const absUrl = href.startsWith("http")
-      ? href
-      : `https://www.portalinmobiliario.com${href}`;
-
-    if (!absUrl.includes("portalinmobiliario.com")) return;
-
-    const anchorText = normalizeText($(el).text());
-    const cardText = normalizeText($(el).closest("li, article, div").text());
-    const combined = normalizeText(`${anchorText} ${cardText}`);
-
-    if (combined.length < 25) return;
-    if (seen.has(absUrl)) return;
-
-    const looksLikeListing =
-      combined.includes("dormitorio") ||
-      combined.includes("baño") ||
-      combined.includes("m²") ||
-      combined.includes("$");
-
-    if (!looksLikeListing) return;
-
-    seen.add(absUrl);
-
-    items.push({
-      source: "portalinmobiliario",
-      sourceUrl,
-      url: absUrl,
-      rawText: combined
-    });
-  });
-
-  return items;
 }
 
 function enrichAndFilter(items, config) {
@@ -264,8 +204,70 @@ function enrichAndFilter(items, config) {
     .sort((a, b) => b.score - a.score);
 }
 
+async function autoScroll(page, rounds = 4) {
+  for (let i = 0; i < rounds; i++) {
+    await page.mouse.wheel(0, 2500);
+    await page.waitForTimeout(1200);
+  }
+}
+
+async function scrapePortalPage(page, target) {
+  await page.goto(target.url, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  await page.waitForTimeout(3500);
+  await autoScroll(page, 5);
+
+  const items = await page.evaluate((sourceUrl) => {
+    function normalizeText(s = "") {
+      return String(s).replace(/\s+/g, " ").trim();
+    }
+
+    const anchors = Array.from(document.querySelectorAll("a[href]"));
+    const rows = [];
+    const seen = new Set();
+
+    for (const a of anchors) {
+      const href = a.href;
+      if (!href) continue;
+      if (!href.includes("portalinmobiliario.com")) continue;
+
+      const card = a.closest("li, article, div");
+      const anchorText = normalizeText(a.innerText || "");
+      const cardText = normalizeText(card?.innerText || "");
+      const combined = normalizeText(`${anchorText} ${cardText}`);
+
+      if (combined.length < 25) continue;
+
+      const looksLikeListing =
+        combined.includes("dormitorio") ||
+        combined.includes("baño") ||
+        combined.includes("m²") ||
+        combined.includes("$");
+
+      if (!looksLikeListing) continue;
+      if (seen.has(href)) continue;
+
+      seen.add(href);
+
+      rows.push({
+        source: "portalinmobiliario",
+        sourceUrl,
+        url: href,
+        rawText: combined
+      });
+    }
+
+    return rows;
+  }, target.url);
+
+  return items;
+}
+
 app.get("/", (req, res) => {
-  res.send("Scraper real Portal Inmobiliario funcionando 🚀");
+  res.send("Scraper Playwright Portal funcionando 🚀");
 });
 
 app.post("/search", async (req, res) => {
@@ -274,15 +276,27 @@ app.post("/search", async (req, res) => {
     ...(req.body || {})
   };
 
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
   try {
+    const context = await browser.newContext({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      locale: "es-CL",
+      viewport: { width: 1440, height: 2200 }
+    });
+
+    const page = await context.newPage();
     const targets = buildTargets();
+
     let allItems = [];
 
     for (const target of targets) {
       try {
-        const html = await fetchHtml(target.url);
-        const $ = cheerio.load(html);
-        const rows = extractCardsFromPortal($, target.url);
+        const rows = await scrapePortalPage(page, target);
         allItems.push(...rows);
       } catch (err) {
         console.error(`Error scrapeando ${target.url}:`, err.message);
@@ -303,6 +317,7 @@ app.post("/search", async (req, res) => {
 
     res.json({
       ok: true,
+      rawCount: allItems.length,
       count: unique.length,
       items: unique
     });
@@ -312,6 +327,8 @@ app.post("/search", async (req, res) => {
       ok: false,
       error: err.message
     });
+  } finally {
+    await browser.close();
   }
 });
 
