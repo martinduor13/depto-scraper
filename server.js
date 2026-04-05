@@ -60,22 +60,6 @@ function buildTargets() {
     {
       comuna: "las-condes",
       url: "https://www.portalinmobiliario.com/arriendo/departamento/las-condes-metropolitana"
-    },
-    {
-      comuna: "providencia-1d",
-      url: "https://www.portalinmobiliario.com/arriendo/departamento/1-dormitorio/providencia-metropolitana"
-    },
-    {
-      comuna: "las-condes-1d",
-      url: "https://www.portalinmobiliario.com/arriendo/departamento/1-dormitorio/las-condes-metropolitana"
-    },
-    {
-      comuna: "providencia-2d",
-      url: "https://www.portalinmobiliario.com/arriendo/departamento/2-dormitorios/providencia-metropolitana"
-    },
-    {
-      comuna: "las-condes-2d",
-      url: "https://www.portalinmobiliario.com/arriendo/departamento/2-dormitorios/las-condes-metropolitana"
     }
   ];
 }
@@ -193,8 +177,6 @@ function enrichAndFilter(items, config) {
     .filter((x) => !x.isStudio)
     .filter((x) => x.layoutAllowed)
     .filter((x) => x.nearMetro)
-    .filter((x) => x.isNewBuilding)
-    .filter((x) => x.isFurnished)
     .filter(
       (x) =>
         x.totalPrice &&
@@ -204,21 +186,15 @@ function enrichAndFilter(items, config) {
     .sort((a, b) => b.score - a.score);
 }
 
-async function autoScroll(page, rounds = 4) {
-  for (let i = 0; i < rounds; i++) {
-    await page.mouse.wheel(0, 2500);
-    await page.waitForTimeout(1200);
-  }
-}
-
 async function scrapePortalPage(page, target) {
+  console.log("Scrapeando:", target.url);
+
   await page.goto(target.url, {
     waitUntil: "domcontentloaded",
-    timeout: 30000
+    timeout: 20000
   });
 
-  await page.waitForTimeout(3500);
-  await autoScroll(page, 2);
+  await page.waitForTimeout(1200);
 
   const items = await page.evaluate((sourceUrl) => {
     function normalizeText(s = "") {
@@ -258,6 +234,8 @@ async function scrapePortalPage(page, target) {
         url: href,
         rawText: combined
       });
+
+      if (rows.length >= 40) break;
     }
 
     return rows;
@@ -276,6 +254,8 @@ app.post("/search", async (req, res) => {
     ...(req.body || {})
   };
 
+  console.log("POST /search iniciado");
+
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
@@ -286,11 +266,13 @@ app.post("/search", async (req, res) => {
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
       locale: "es-CL",
-      viewport: { width: 1440, height: 2200 }
+      viewport: { width: 1400, height: 1600 }
     });
 
     const page = await context.newPage();
     const targets = buildTargets();
+
+    console.log("Targets:", targets.length);
 
     let allItems = [];
 
@@ -302,6 +284,8 @@ app.post("/search", async (req, res) => {
         console.error(`Error scrapeando ${target.url}:`, err.message);
       }
     }
+
+    console.log("Items crudos:", allItems.length);
 
     const filtered = enrichAndFilter(allItems, config);
 
@@ -315,6 +299,8 @@ app.post("/search", async (req, res) => {
       }
     }
 
+    console.log("Items filtrados:", unique.length);
+
     res.json({
       ok: true,
       rawCount: allItems.length,
@@ -322,7 +308,7 @@ app.post("/search", async (req, res) => {
       items: unique
     });
   } catch (err) {
-    console.error(err);
+    console.error("Error general /search:", err);
     res.status(500).json({
       ok: false,
       error: err.message
